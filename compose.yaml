@@ -1,0 +1,56 @@
+# FlowSync — bases de datos PostgreSQL para desarrollo y pruebas.
+#
+# Se levantan con `make db-up` (que espera a que las dos estén sanas) y se paran
+# con `make db-down`. Los puertos no son el 5432 a propósito: quien tenga un
+# PostgreSQL propio levantado lo tendría ocupado.
+#
+# Las credenciales son de uso local y no son un secreto: el backend las lee de
+# `backend/.env` (desarrollo) y de `backend/.env.test` (pruebas).
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: flowsync
+      POSTGRES_PASSWORD: flowsync
+      POSTGRES_DB: flowsync
+    ports:
+      - '54410:5432'
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # La primera vez, la imagen crea la base con un servidor temporal que solo
+    # escucha por el socket Unix y luego lo reinicia. Un `pg_isready` por socket
+    # daría el servidor por listo en plena inicialización; forzando TCP con
+    # `-h 127.0.0.1` solo responde el servidor definitivo.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U flowsync -d flowsync']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  db-test:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: flowsync
+      POSTGRES_PASSWORD: flowsync
+      POSTGRES_DB: flowsync_test
+    ports:
+      - '54411:5432'
+    # Efímera a propósito: los datos viven en memoria y desaparecen al parar el
+    # contenedor. El tmpfs no es opcional: la imagen declara un VOLUME en esa
+    # ruta, así que sin él Docker crearía un volumen anónimo y la base
+    # sobreviviría entre arranques.
+    tmpfs:
+      - /var/lib/postgresql/data
+    # Sin durabilidad: si la base se pierde, se pierde igual al pararla.
+    command: postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U flowsync -d flowsync_test']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  db-data:

@@ -1,6 +1,6 @@
 # FlowSync — atajos de desarrollo.
 #
-# Requisitos: Node.js + npm y GNU Make.
+# Requisitos: Node.js + npm, GNU Make y Docker (con Compose v2).
 #   - macOS:        make viene con las Command Line Tools de Xcode.
 #   - Linux / WSL:  sudo apt install make   (o el equivalente de tu distro)
 #
@@ -14,7 +14,7 @@ BACKEND  := backend
 FRONTEND := frontend
 
 .DEFAULT_GOAL := help
-.PHONY: help setup start install env migrate clean
+.PHONY: help setup start install env db-up db-down migrate migrate-dev migrate-test test clean
 
 # La ayuda se genera a partir de los comentarios `## ...` de cada target, para
 # que no haya un segundo listado que mantener a mano y que pueda divergir.
@@ -22,14 +22,14 @@ help: ## Muestra esta ayuda
 	@echo "FlowSync — targets disponibles:"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) \
-		| awk 'BEGIN { FS = ":.*## " }; { printf "  make %-8s %s\n", $$1, $$2 }'
+		| awk 'BEGIN { FS = ":.*## " }; { printf "  make %-13s %s\n", $$1, $$2 }'
 	@echo ""
 
 # ---------------------------------------------------------------------------
 # setup
 # ---------------------------------------------------------------------------
 
-setup: install env migrate ## Deja el proyecto listo para arrancar
+setup: install env db-up migrate ## Deja el proyecto listo para arrancar
 	@echo ""
 	@echo "✅ Setup completado. Arranca todo con: make start"
 
@@ -61,9 +61,41 @@ env:
 		cd $(BACKEND) && node ace generate:key; \
 	fi
 
-migrate:
-	@echo "🗃️  Ejecutando migraciones..."
+# ---------------------------------------------------------------------------
+# bases de datos (compose.yaml)
+# ---------------------------------------------------------------------------
+
+# `--wait` no devuelve el control hasta que los dos healthchecks pasan. Hace
+# falta: la primera vez la imagen crea la base y no acepta conexiones mientras
+# tanto, y una migración lanzada justo detrás moriría con conexión rechazada.
+db-up: ## Levanta las bases (db en :54410, db-test en :54411) y espera a que estén sanas
+	@command -v docker >/dev/null 2>&1 || { echo "❌ Docker no está instalado."; exit 1; }
+	@echo "🐘 Levantando PostgreSQL (db y db-test)..."
+	@docker compose up -d --wait db db-test
+
+# Para y borra los contenedores. El volumen de `db` se conserva; `db-test` vive
+# en memoria, así que la próxima vez arranca vacía y hay que migrarla otra vez.
+db-down: ## Para las bases (db conserva sus datos; db-test se pierde)
+	@echo "🛑 Parando PostgreSQL..."
+	@docker compose down
+
+migrate: migrate-dev migrate-test ## Migra las dos bases, desarrollo y pruebas
+
+migrate-dev:
+	@echo "🗃️  Migrando la base de desarrollo (db)..."
 	@cd $(BACKEND) && node ace migration:run
+
+# NODE_ENV=test es lo que hace que el framework cargue `.env.test`, que apunta
+# a db-test.
+migrate-test:
+	@echo "🗃️  Migrando la base de pruebas (db-test)..."
+	@cd $(BACKEND) && NODE_ENV=test node ace migration:run
+
+# db-test es efímera: tras cada `db-up` llega vacía. Por eso `test` la levanta
+# y la migra antes de correr la suite (las dos cosas son idempotentes).
+test: db-up migrate-test ## Corre los tests del backend contra db-test
+	@echo "🧪 Corriendo los tests del backend..."
+	@cd $(BACKEND) && npm test
 
 # ---------------------------------------------------------------------------
 # start
@@ -98,6 +130,7 @@ start: ## Levanta backend y frontend a la vez
 	@if [ ! -f $(BACKEND)/.env ]; then \
 		echo "❌ Falta $(BACKEND)/.env. Ejecuta primero: make setup"; exit 1; \
 	fi
+	@$(MAKE) --no-print-directory db-up
 	@echo "🚀 Arrancando backend (http://localhost:3333) y frontend (http://localhost:5173)..."
 	@echo "   Ctrl-C para parar los dos. Si uno se cae, el otro se cierra también."
 	@echo ""
@@ -112,8 +145,8 @@ start: ## Levanta backend y frontend a la vez
 # clean
 # ---------------------------------------------------------------------------
 
-clean: ## Borra node_modules y la base de datos SQLite
+clean: ## Borra node_modules y las bases de datos (incluido el volumen de db)
 	@echo "🧹 Limpiando..."
 	@rm -rf $(BACKEND)/node_modules $(FRONTEND)/node_modules
-	@rm -f $(BACKEND)/tmp/db.sqlite3 $(BACKEND)/tmp/db.sqlite3-wal $(BACKEND)/tmp/db.sqlite3-shm
+	@docker compose down -v
 	@echo "✅ Listo. Vuelve a ejecutar: make setup"

@@ -109,16 +109,19 @@ empiezan por «La interfaz SHALL…».
 ### Preparar el backend
 
 ```bash
+make db-up                                      # desde la raíz: levanta db y db-test (PostgreSQL en Docker)
 cd backend
 npm install
 cp .env.example .env && node ace generate:key   # solo la primera vez
-node ace migration:run                          # crea tmp/db.sqlite3
+node ace migration:run                          # migra db (desarrollo)
+NODE_ENV=test node ace migration:run            # migra db-test (pruebas)
 ```
 
 ### Tests automáticos
 
 ```bash
-node ace test                                   # todo
+make test                                       # desde la raíz: levanta y migra db-test, y corre todo
+node ace test                                   # todo (con db-test ya migrada)
 node ace test functional                        # solo la suite functional
 node ace test --files=assignee                  # un fichero
 node ace test --tests="el responsable llega con su nombre y sus iniciales"
@@ -132,11 +135,12 @@ señal de que la capability cumpla su spec.
 
 Dos cosas que hay que saber antes de escribir un test aquí:
 
-- La suite functional pega contra **el mismo fichero SQLite que el servidor de desarrollo**:
-  [`config/database.ts`](../../../backend/config/database.ts) declara una sola conexión sin override
-  por entorno. Aísla siempre con `testUtils.db().withGlobalTransaction()` en un `group.each.setup`,
-  como hacen los tests existentes. **No** uses truncate: se llevaría por delante los datos con los que
-  estés trabajando.
+- La suite functional pega contra **su propia base**, el servicio `db-test` de
+  [`compose.yaml`](../../../compose.yaml): con `NODE_ENV=test` el framework carga
+  [`backend/.env.test`](../../../backend/.env.test), que apunta al puerto 54411. Esa base va en memoria
+  y llega vacía tras cada `make db-up`, así que hay que migrarla antes (`make test` lo hace). Dentro de
+  un run, aísla igualmente con `testUtils.db().withGlobalTransaction()` en un `group.each.setup`, como
+  hacen los tests existentes, para que un test no vea lo que dejó otro.
 - Un test por scenario, citando el requisito en la cabecera del fichero. Es lo que permite leer la
   spec y saber qué falta.
 
